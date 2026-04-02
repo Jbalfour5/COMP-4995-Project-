@@ -1,6 +1,3 @@
-//***************************************************************************************
-// ProjectFiles.cpp
-//***************************************************************************************
 #define TINYOBJLOADER_IMPLEMENTATION
 #define NOMINMAX
 
@@ -62,8 +59,8 @@ private:
 
     void BuildRootSignature();
     void BuildShadersAndInputLayout();
-    void BuildShapeGeometry();
     void BuildCarGeometry();
+    void BuildRoadGeometry();
     void BuildPSOs();
     void BuildFrameResources();
     void BuildMaterials();
@@ -72,6 +69,7 @@ private:
 
 private:
     RenderItem* mCarRitem = nullptr;
+    RenderItem* mRoadRitem = nullptr;
 
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
     FrameResource* mCurrFrameResource = nullptr;
@@ -148,8 +146,8 @@ bool CarApp::Initialize()
 
     BuildRootSignature();
     BuildShadersAndInputLayout();
-    BuildShapeGeometry();
     BuildCarGeometry();
+    BuildRoadGeometry();
     BuildMaterials();
     BuildRenderItems();
     BuildFrameResources();
@@ -299,36 +297,36 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
 
     if (mCarRitem == nullptr) return;
 
-    float t = gt.TotalTime();
-
-    float loopTime = 10.0f;
-    float u = fmodf(t, loopTime) / loopTime;
-
-    float zPos = -20.0f + u * 40.0f;
-
-    float xPos = 0.0f;
-    if (u > 0.25f && u < 0.75f)
+    static const XMFLOAT3 waypoints[] =
     {
-        float s = (u - 0.25f) / 0.5f;
-        xPos = 3.0f * sinf(s * XM_PI);
-    }
+        { 2.00f, 0.5f, -7.5f },
+        { 1.5f, 0.5f, -5.0f },
+        { 0.75f, 0.35f, -2.5f },
+        { 0.0f, 0.35f,  0.0f },
+        { -0.7f, 0.35f,  2.5f }, 
+        { -1.0f, 0.35f,  5.0f },
+        { -1.7f, 0.35f,  7.5f },
+    };
+    static const int numWaypoints = _countof(waypoints);
 
-    float dxdu = 0.0f;
-    if (u > 0.25f && u < 0.75f)
-    {
-        float s = (u - 0.25f) / 0.5f;
-        float dsdu = 1.0f / 0.5f;
-        dxdu = 3.0f * cosf(s * XM_PI) * XM_PI * dsdu;
-    }
-    float dzdu = 40.0f;
-    float yawAngle = atan2f(dxdu, dzdu);
+    float loopTime = 6.0f;
+    float u = fmodf(gt.TotalTime(), loopTime) / loopTime;
+    float scaledU = u * (numWaypoints - 1);
+    int i0 = (int)scaledU;
+    int i1 = MathHelper::Min(i0 + 1, numWaypoints - 1);
+    float t = scaledU - (float)i0;
 
-    float yPos = 1.0f;
+    XMVECTOR p0 = XMLoadFloat3(&waypoints[i0]);
+    XMVECTOR p1 = XMLoadFloat3(&waypoints[i1]);
+    XMVECTOR pos = XMVectorLerp(p0, p1, t);
+
+    XMVECTOR dir = XMVector3Normalize(XMVectorSubtract(p1, p0));
+    float yaw = atan2f(XMVectorGetX(dir), XMVectorGetZ(dir));
 
     XMMATRIX world =
-        XMMatrixScaling(0.5f, 0.5f, 0.5f) *
-        XMMatrixRotationY(yawAngle) *
-        XMMatrixTranslation(xPos, yPos, zPos);
+        XMMatrixScaling(0.05f, 0.05f, 0.05f) *
+        XMMatrixRotationY(yaw) *
+        XMMatrixTranslation(XMVectorGetX(pos), XMVectorGetY(pos), XMVectorGetZ(pos));
 
     XMStoreFloat4x4(&mCarRitem->World, world);
     mCarRitem->NumFramesDirty = gNumFrameResources;
@@ -431,60 +429,6 @@ void CarApp::BuildShadersAndInputLayout()
     };
 }
 
-void CarApp::BuildShapeGeometry()
-{
-    GeometryGenerator geoGen;
-    GeometryGenerator::MeshData grid = geoGen.CreateGrid(50.0f, 60.0f, 100, 120);
-
-    UINT gridVertexOffset = 0;
-    UINT gridIndexOffset = 0;
-
-    SubmeshGeometry gridSubmesh;
-    gridSubmesh.IndexCount = (UINT)grid.Indices32.size();
-    gridSubmesh.StartIndexLocation = gridIndexOffset;
-    gridSubmesh.BaseVertexLocation = gridVertexOffset;
-
-    auto totalVertexCount = grid.Vertices.size();
-
-    std::vector<Vertex> vertices(totalVertexCount);
-    UINT k = 0;
-    for (size_t i = 0; i < grid.Vertices.size(); ++i, ++k)
-    {
-        vertices[k].Pos = grid.Vertices[i].Position;
-        vertices[k].Normal = grid.Vertices[i].Normal;
-    }
-
-    std::vector<std::uint16_t> indices;
-    indices.insert(indices.end(), std::begin(grid.GetIndices16()), std::end(grid.GetIndices16()));
-
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
-    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
-
-    auto geo = std::make_unique<MeshGeometry>();
-    geo->Name = "shapeGeo";
-
-    ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
-    CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
-
-    ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
-    CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
-
-    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-        mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
-
-    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-        mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
-
-    geo->VertexByteStride = sizeof(Vertex);
-    geo->VertexBufferByteSize = vbByteSize;
-    geo->IndexFormat = DXGI_FORMAT_R16_UINT;
-    geo->IndexBufferByteSize = ibByteSize;
-
-    geo->DrawArgs["grid"] = gridSubmesh;
-
-    mGeometries[geo->Name] = std::move(geo);
-}
-
 void CarApp::BuildCarGeometry()
 {
     tinyobj::attrib_t attrib;
@@ -558,6 +502,79 @@ void CarApp::BuildCarGeometry()
     mGeometries[geo->Name] = std::move(geo);
 }
 
+void CarApp::BuildRoadGeometry()
+{
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
+
+    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, "Models/road.obj");
+
+    if (!ret || !err.empty())
+    {
+        MessageBoxA(0, err.c_str(), "OBJ Load Error", MB_OK);
+        return;
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<std::int32_t> indices;
+
+    for (auto& shape : shapes)
+    {
+        for (auto& index : shape.mesh.indices)
+        {
+            Vertex v = {};
+            v.Pos = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+            if (index.normal_index >= 0)
+            {
+                v.Normal = {
+                    attrib.normals[3 * index.normal_index + 0],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2]
+                };
+            }
+            indices.push_back((std::int32_t)vertices.size());
+            vertices.push_back(v);
+        }
+    }
+
+    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::int32_t);
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "roadGeo";
+
+    ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+    CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+    ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+    CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
+
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
+
+    geo->VertexByteStride = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbByteSize;
+    geo->IndexFormat = DXGI_FORMAT_R32_UINT;
+    geo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT)indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    geo->DrawArgs["road"] = submesh;
+    mGeometries[geo->Name] = std::move(geo);
+}
+
 void CarApp::BuildPSOs()
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
@@ -600,44 +617,43 @@ void CarApp::BuildFrameResources()
 
 void CarApp::BuildMaterials()
 {
-    auto gridMat = std::make_unique<Material>();
-    gridMat->Name = "gridMat";
-    gridMat->MatCBIndex = 0;
-    gridMat->DiffuseSrvHeapIndex = 0;
-    gridMat->DiffuseAlbedo = XMFLOAT4(0.5f, 0.5f, 0.5f, 1.0f);
-    gridMat->FresnelR0 = XMFLOAT3(0.05f, 0.05f, 0.05f);
-    gridMat->Roughness = 0.5f;
-
     auto carMat = std::make_unique<Material>();
     carMat->Name = "carMat";
-    carMat->MatCBIndex = 1;
-    carMat->DiffuseSrvHeapIndex = 1;
+    carMat->MatCBIndex = 0;
+    carMat->DiffuseSrvHeapIndex = 0;
     carMat->DiffuseAlbedo = XMFLOAT4(0.8f, 0.1f, 0.1f, 1.0f);
     carMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     carMat->Roughness = 0.2f;
 
-    mMaterials["gridMat"] = std::move(gridMat);
+    auto roadMat = std::make_unique<Material>();
+    roadMat->Name = "roadMat";
+    roadMat->MatCBIndex = 1;
+    roadMat->DiffuseSrvHeapIndex = 1;
+    roadMat->DiffuseAlbedo = XMFLOAT4(0.15f, 0.15f, 0.15f, 1.0f);
+    roadMat->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
+    roadMat->Roughness = 0.9f;
+
     mMaterials["carMat"] = std::move(carMat);
+    mMaterials["roadMat"] = std::move(roadMat);
 }
 
 void CarApp::BuildRenderItems()
 {
-    // Baseplate (grid)
-    auto gridRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&gridRitem->World, XMMatrixTranslation(0.0f, -0.5f, 0.0f));
-    XMStoreFloat4x4(&gridRitem->TexTransform, XMMatrixScaling(8.0f, 8.0f, 1.0f));
-    gridRitem->ObjCBIndex = 0;
-    gridRitem->Mat = mMaterials["gridMat"].get();
-    gridRitem->Geo = mGeometries["shapeGeo"].get();
-    gridRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    gridRitem->IndexCount = gridRitem->Geo->DrawArgs["grid"].IndexCount;
-    gridRitem->StartIndexLocation = gridRitem->Geo->DrawArgs["grid"].StartIndexLocation;
-    gridRitem->BaseVertexLocation = gridRitem->Geo->DrawArgs["grid"].BaseVertexLocation;
-    mAllRitems.push_back(std::move(gridRitem));
+    auto roadRitem = std::make_unique<RenderItem>();
+    XMStoreFloat4x4(&roadRitem->World, XMMatrixScaling(0.05f, 0.05f, 0.05f));
+    roadRitem->TexTransform = MathHelper::Identity4x4();
+    roadRitem->ObjCBIndex = 0;
+    roadRitem->Mat = mMaterials["roadMat"].get();
+    roadRitem->Geo = mGeometries["roadGeo"].get();
+    roadRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    roadRitem->IndexCount = roadRitem->Geo->DrawArgs["road"].IndexCount;
+    roadRitem->StartIndexLocation = roadRitem->Geo->DrawArgs["road"].StartIndexLocation;
+    roadRitem->BaseVertexLocation = roadRitem->Geo->DrawArgs["road"].BaseVertexLocation;
+    mRoadRitem = roadRitem.get();
+    mAllRitems.push_back(std::move(roadRitem));
 
-    // Car
     auto carRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.5f, 0.5f, 0.5f) * XMMatrixTranslation(0.0f, 1.0f, 5.0f));
+    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.05f, 0.05f, 0.05f) * XMMatrixTranslation(0.0f, 0.15f, 0.0f));
     carRitem->TexTransform = MathHelper::Identity4x4();
     carRitem->ObjCBIndex = 1;
     carRitem->Mat = mMaterials["carMat"].get();
