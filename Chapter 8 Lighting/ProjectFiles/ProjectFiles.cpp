@@ -62,6 +62,7 @@ private:
     void BuildShadersAndInputLayout();
     void BuildCarGeometry();
     void BuildRoadGeometry();
+    void BuildSkyGeometry();
     void BuildPSOs();
     void BuildFrameResources();
     void BuildMaterials();
@@ -73,6 +74,7 @@ private:
 private:
     RenderItem* mCarRitem = nullptr;
     RenderItem* mRoadRitem = nullptr;
+    RenderItem* mSkyRitem = nullptr;
 
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
     FrameResource* mCurrFrameResource = nullptr;
@@ -89,6 +91,7 @@ private:
 
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
     ComPtr<ID3D12PipelineState> mOpaquePSO = nullptr;
+    ComPtr<ID3D12PipelineState> mSkyPSO = nullptr;
 
     std::vector<std::unique_ptr<RenderItem>> mAllRitems;
     std::vector<RenderItem*> mOpaqueRitems;
@@ -98,6 +101,8 @@ private:
     Camera mCamera;
 
     POINT mLastMousePos;
+
+    std::unique_ptr<Texture> mSkyTex;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -141,16 +146,38 @@ bool CarApp::Initialize()
 
     mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-   
+    mSkyTex = std::make_unique<Texture>();
+    mSkyTex->Name = "skyTex";
+    mSkyTex->Filename = L"../../Textures/sunsetcube1024.dds";
+    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),
+        mCommandList.Get(), mSkyTex->Filename.c_str(),
+        mSkyTex->Resource, mSkyTex->UploadHeap));
+
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+    srvHeapDesc.NumDescriptors = 1;
+    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = mSkyTex->Resource->GetDesc().Format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    srvDesc.TextureCube.MostDetailedMip = 0;
+    srvDesc.TextureCube.MipLevels = mSkyTex->Resource->GetDesc().MipLevels;
+    srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
+    md3dDevice->CreateShaderResourceView(mSkyTex->Resource.Get(), &srvDesc, mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
     BuildRootSignature();
     BuildShadersAndInputLayout();
     BuildCarGeometry();
     BuildRoadGeometry();
+    BuildSkyGeometry();
     BuildMaterials();
     BuildRenderItems();
     BuildFrameResources();
     BuildPSOs();
-    
+
     ThrowIfFailed(mCommandList->Close());
     ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
     mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
@@ -187,6 +214,7 @@ void CarApp::Update(const GameTimer& gt)
     UpdateMaterialCBs(gt);
     UpdateMainPassCB(gt);
 }
+
 void CarApp::OnKeyboardInput(const GameTimer& gt)
 {
     const float dt = gt.DeltaTime();
@@ -203,6 +231,7 @@ void CarApp::OnKeyboardInput(const GameTimer& gt)
 
     mCamera.UpdateViewMatrix();
 }
+
 void CarApp::Draw(const GameTimer& gt)
 {
     auto cmdListAlloc = mCurrFrameResource->CmdListAlloc;
@@ -223,10 +252,22 @@ void CarApp::Draw(const GameTimer& gt)
 
     mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
+    ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
+    mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
+    mCommandList->SetGraphicsRootDescriptorTable(3, mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+
     auto passCB = mCurrFrameResource->PassCB->Resource();
     mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
 
     DrawRenderItems(mCommandList.Get(), mOpaqueRitems);
+
+    if (mSkyPSO != nullptr)
+    {
+        mCommandList->SetPipelineState(mSkyPSO.Get());
+        std::vector<RenderItem*> skyRitem;
+        skyRitem.push_back(mSkyRitem);
+        DrawRenderItems(mCommandList.Get(), skyRitem);
+    }
 
     mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
@@ -302,7 +343,7 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
         { 1.5f, 0.5f, -5.0f },
         { 0.75f, 0.35f, -2.5f },
         { 0.0f, 0.35f,  0.0f },
-        { -0.7f, 0.35f,  2.5f }, 
+        { -0.7f, 0.35f,  2.5f },
         { -1.0f, 0.35f,  5.0f },
         { -1.7f, 0.35f,  7.5f },
     };
@@ -329,6 +370,14 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
 
     XMStoreFloat4x4(&mCarRitem->World, world);
     mCarRitem->NumFramesDirty = gNumFrameResources;
+
+    if (mSkyRitem != nullptr)
+    {
+        XMFLOAT3 eyePos = mCamera.GetPosition3f();
+        XMMATRIX skyWorld = XMMatrixScaling(5000.0f, 5000.0f, 5000.0f) * XMMatrixTranslation(eyePos.x, eyePos.y, eyePos.z);
+        XMStoreFloat4x4(&mSkyRitem->World, skyWorld);
+        mSkyRitem->NumFramesDirty = gNumFrameResources;
+    }
 }
 
 void CarApp::UpdateMaterialCBs(const GameTimer& gt)
@@ -355,7 +404,6 @@ void CarApp::UpdateMaterialCBs(const GameTimer& gt)
 
 void CarApp::UpdateMainPassCB(const GameTimer& gt)
 {
-    // Get view and proj matrices from the Camera class
     XMMATRIX view = mCamera.GetView();
     XMMATRIX proj = mCamera.GetProj();
 
@@ -371,7 +419,6 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
     XMStoreFloat4x4(&mMainPassCB.ViewProj, XMMatrixTranspose(viewProj));
     XMStoreFloat4x4(&mMainPassCB.InvViewProj, XMMatrixTranspose(invViewProj));
 
-    // Get eye position from Camera class
     mMainPassCB.EyePosW = mCamera.GetPosition3f();
 
     mMainPassCB.RenderTargetSize = XMFLOAT2((float)mClientWidth, (float)mClientHeight);
@@ -394,12 +441,23 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
 
 void CarApp::BuildRootSignature()
 {
-    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+    CD3DX12_DESCRIPTOR_RANGE texTable;
+    texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+    CD3DX12_ROOT_PARAMETER slotRootParameter[4];
     slotRootParameter[0].InitAsConstantBufferView(0);
     slotRootParameter[1].InitAsConstantBufferView(1);
     slotRootParameter[2].InitAsConstantBufferView(2);
+    slotRootParameter[3].InitAsDescriptorTable(1, &texTable, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(3, slotRootParameter, 0, nullptr,
+    const CD3DX12_STATIC_SAMPLER_DESC linearWrap(
+        0,
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP);
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter, 1, &linearWrap,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
@@ -423,6 +481,9 @@ void CarApp::BuildShadersAndInputLayout()
 {
     mShaders["standardVS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", nullptr, "VS", "vs_5_1");
     mShaders["opaquePS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", nullptr, "PS", "ps_5_1");
+
+    mShaders["skyVS"] = d3dUtil::CompileShader(L"Shaders\\Sky.hlsl", nullptr, "VS", "vs_5_1");
+    mShaders["skyPS"] = d3dUtil::CompileShader(L"Shaders\\Sky.hlsl", nullptr, "PS", "ps_5_1");
 
     mInputLayout =
     {
@@ -578,6 +639,52 @@ void CarApp::BuildRoadGeometry()
     mGeometries[geo->Name] = std::move(geo);
 }
 
+void CarApp::BuildSkyGeometry()
+{
+    GeometryGenerator geoGen;
+    GeometryGenerator::MeshData sphere = geoGen.CreateSphere(0.5f, 20, 20);
+
+    std::vector<Vertex> vertices(sphere.Vertices.size());
+    for (size_t i = 0; i < sphere.Vertices.size(); ++i)
+    {
+        vertices[i].Pos = sphere.Vertices[i].Position;
+        vertices[i].Normal = sphere.Vertices[i].Normal;
+    }
+
+    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+
+    std::vector<std::uint16_t> indices = sphere.GetIndices16();
+    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "skyGeo";
+
+    ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+    CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+    ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+    CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
+
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
+
+    geo->VertexByteStride = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbByteSize;
+    geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+    geo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT)indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    geo->DrawArgs["sky"] = submesh;
+    mGeometries[geo->Name] = std::move(geo);
+}
+
 void CarApp::BuildPSOs()
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
@@ -607,6 +714,26 @@ void CarApp::BuildPSOs()
     opaquePsoDesc.DSVFormat = mDepthStencilFormat;
 
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mOpaquePSO)));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = opaquePsoDesc;
+    skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    skyPsoDesc.pRootSignature = mRootSignature.Get();
+
+    if (mShaders.find("skyVS") != mShaders.end() && mShaders.find("skyPS") != mShaders.end())
+    {
+        skyPsoDesc.VS =
+        {
+            reinterpret_cast<BYTE*>(mShaders["skyVS"]->GetBufferPointer()),
+            mShaders["skyVS"]->GetBufferSize()
+        };
+        skyPsoDesc.PS =
+        {
+            reinterpret_cast<BYTE*>(mShaders["skyPS"]->GetBufferPointer()),
+            mShaders["skyPS"]->GetBufferSize()
+        };
+        ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&skyPsoDesc, IID_PPV_ARGS(&mSkyPSO)));
+    }
 }
 
 void CarApp::BuildFrameResources()
@@ -636,8 +763,17 @@ void CarApp::BuildMaterials()
     roadMat->FresnelR0 = XMFLOAT3(0.02f, 0.02f, 0.02f);
     roadMat->Roughness = 0.9f;
 
+    auto skyMat = std::make_unique<Material>();
+    skyMat->Name = "skyMat";
+    skyMat->MatCBIndex = 2;
+    skyMat->DiffuseSrvHeapIndex = 2;
+    skyMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
+    skyMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+    skyMat->Roughness = 1.0f;
+
     mMaterials["carMat"] = std::move(carMat);
     mMaterials["roadMat"] = std::move(roadMat);
+    mMaterials["skyMat"] = std::move(skyMat);
 }
 
 void CarApp::BuildRenderItems()
@@ -668,8 +804,24 @@ void CarApp::BuildRenderItems()
     mCarRitem = carRitem.get();
     mAllRitems.push_back(std::move(carRitem));
 
+    auto skyRitem = std::make_unique<RenderItem>();
+    XMStoreFloat4x4(&skyRitem->World, XMMatrixScaling(5000.0f, 5000.0f, 5000.0f));
+    skyRitem->TexTransform = MathHelper::Identity4x4();
+    skyRitem->ObjCBIndex = 2;
+    skyRitem->Mat = mMaterials["skyMat"].get();
+    skyRitem->Geo = mGeometries["skyGeo"].get();
+    skyRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    skyRitem->IndexCount = skyRitem->Geo->DrawArgs["sky"].IndexCount;
+    skyRitem->StartIndexLocation = skyRitem->Geo->DrawArgs["sky"].StartIndexLocation;
+    skyRitem->BaseVertexLocation = skyRitem->Geo->DrawArgs["sky"].BaseVertexLocation;
+    mSkyRitem = skyRitem.get();
+    mAllRitems.push_back(std::move(skyRitem));
+
     for (auto& e : mAllRitems)
-        mOpaqueRitems.push_back(e.get());
+    {
+        if (e.get() != mSkyRitem)
+            mOpaqueRitems.push_back(e.get());
+    }
 }
 
 void CarApp::DrawRenderItems(ID3D12GraphicsCommandList* cmdList, const std::vector<RenderItem*>& ritems)
