@@ -481,6 +481,12 @@ void CarApp::BuildShadersAndInputLayout()
 {
     mShaders["standardVS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", nullptr, "VS", "vs_5_1");
     mShaders["opaquePS"] = d3dUtil::CompileShader(L"Shaders\\Default.hlsl", nullptr, "PS", "ps_5_1");
+    mShaders["standardGS"] = d3dUtil::CompileShader(
+        L"Shaders\\Default.hlsl",
+        nullptr,
+        "MyGS",
+        "gs_5_1"
+    );
 
     mShaders["skyVS"] = d3dUtil::CompileShader(L"Shaders\\Sky.hlsl", nullptr, "VS", "vs_5_1");
     mShaders["skyPS"] = d3dUtil::CompileShader(L"Shaders\\Sky.hlsl", nullptr, "PS", "ps_5_1");
@@ -713,6 +719,12 @@ void CarApp::BuildPSOs()
     opaquePsoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
     opaquePsoDesc.DSVFormat = mDepthStencilFormat;
 
+    opaquePsoDesc.GS =
+    {
+        reinterpret_cast<BYTE*>(mShaders["standardGS"]->GetBufferPointer()),
+        mShaders["standardGS"]->GetBufferSize()
+    };
+
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mOpaquePSO)));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = opaquePsoDesc;
@@ -732,6 +744,7 @@ void CarApp::BuildPSOs()
             reinterpret_cast<BYTE*>(mShaders["skyPS"]->GetBufferPointer()),
             mShaders["skyPS"]->GetBufferSize()
         };
+        skyPsoDesc.GS = {};
         ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&skyPsoDesc, IID_PPV_ARGS(&mSkyPSO)));
     }
 }

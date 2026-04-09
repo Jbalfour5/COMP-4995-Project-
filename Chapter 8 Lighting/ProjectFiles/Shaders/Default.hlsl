@@ -116,4 +116,23 @@ float4 PS(VertexOut pin) : SV_Target
     return litColor;
 }
 
+[maxvertexcount(3)]
+void MyGS(triangle VertexOut input[3], inout TriangleStream<VertexOut> TriStream)
+{
+    float offset = 0.1f + 0.5f * sin(gTotalTime * 2.0f);
+
+    for (int i = 0; i < 3; ++i)
+    {
+        VertexOut v = input[i];
+
+        v.PosW += v.NormalW * offset;
+
+        v.PosH = mul(float4(v.PosW, 1.0f), gViewProj);
+
+        TriStream.Append(v);
+    }
+
+    TriStream.RestartStrip();
+}
+
 
