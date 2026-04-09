@@ -63,6 +63,7 @@ private:
     void BuildCarGeometry();
     void BuildRoadGeometry();
     void BuildSkyGeometry();
+    void BuildWaterGeometry();
     void BuildPSOs();
     void BuildFrameResources();
     void BuildMaterials();
@@ -75,6 +76,7 @@ private:
     RenderItem* mCarRitem = nullptr;
     RenderItem* mRoadRitem = nullptr;
     RenderItem* mSkyRitem = nullptr;
+    RenderItem* mWaterRitem = nullptr;
 
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
     FrameResource* mCurrFrameResource = nullptr;
@@ -92,9 +94,11 @@ private:
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
     ComPtr<ID3D12PipelineState> mOpaquePSO = nullptr;
     ComPtr<ID3D12PipelineState> mSkyPSO = nullptr;
+    ComPtr<ID3D12PipelineState> mTransparentPSO = nullptr;
 
     std::vector<std::unique_ptr<RenderItem>> mAllRitems;
     std::vector<RenderItem*> mOpaqueRitems;
+    std::vector<RenderItem*> mTransparentRitems;
 
     PassConstants mMainPassCB;
 
@@ -172,6 +176,7 @@ bool CarApp::Initialize()
     BuildShadersAndInputLayout();
     BuildCarGeometry();
     BuildRoadGeometry();
+    BuildWaterGeometry();
     BuildSkyGeometry();
     BuildMaterials();
     BuildRenderItems();
@@ -267,6 +272,12 @@ void CarApp::Draw(const GameTimer& gt)
         std::vector<RenderItem*> skyRitem;
         skyRitem.push_back(mSkyRitem);
         DrawRenderItems(mCommandList.Get(), skyRitem);
+    }
+
+    if (mTransparentPSO != nullptr)
+    {
+        mCommandList->SetPipelineState(mTransparentPSO.Get());
+        DrawRenderItems(mCommandList.Get(), mTransparentRitems);
     }
 
     mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -645,6 +656,52 @@ void CarApp::BuildRoadGeometry()
     mGeometries[geo->Name] = std::move(geo);
 }
 
+void CarApp::BuildWaterGeometry()
+{
+    GeometryGenerator geoGen;
+    GeometryGenerator::MeshData grid = geoGen.CreateGrid(160.0f, 160.0f, 50, 50);
+
+    std::vector<Vertex> vertices(grid.Vertices.size());
+    for (size_t i = 0; i < grid.Vertices.size(); ++i)
+    {
+        vertices[i].Pos = grid.Vertices[i].Position;
+        vertices[i].Normal = grid.Vertices[i].Normal;
+    }
+
+    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+
+    std::vector<std::uint16_t> indices = grid.GetIndices16();
+    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "waterGeo";
+
+    ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+    CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+    ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+    CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
+
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
+
+    geo->VertexByteStride = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbByteSize;
+    geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+    geo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT)indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    geo->DrawArgs["water"] = submesh;
+    mGeometries[geo->Name] = std::move(geo);
+}
+
 void CarApp::BuildSkyGeometry()
 {
     GeometryGenerator geoGen;
@@ -727,6 +784,22 @@ void CarApp::BuildPSOs()
 
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mOpaquePSO)));
 
+    D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc;
+    transparencyBlendDesc.BlendEnable = true;
+    transparencyBlendDesc.LogicOpEnable = false;
+    transparencyBlendDesc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    transparencyBlendDesc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    transparencyBlendDesc.BlendOp = D3D12_BLEND_OP_ADD;
+    transparencyBlendDesc.SrcBlendAlpha = D3D12_BLEND_ONE;
+    transparencyBlendDesc.DestBlendAlpha = D3D12_BLEND_ZERO;
+    transparencyBlendDesc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    transparencyBlendDesc.LogicOp = D3D12_LOGIC_OP_NOOP;
+    transparencyBlendDesc.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC transparentPsoDesc = opaquePsoDesc;
+    transparentPsoDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&transparentPsoDesc, IID_PPV_ARGS(&mTransparentPSO)));
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = opaquePsoDesc;
     skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
@@ -784,9 +857,18 @@ void CarApp::BuildMaterials()
     skyMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     skyMat->Roughness = 1.0f;
 
+    auto waterMat = std::make_unique<Material>();
+    waterMat->Name = "waterMat";
+    waterMat->MatCBIndex = 3;
+    waterMat->DiffuseSrvHeapIndex = 3;
+    waterMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 1.0f, 0.5f);
+    waterMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+    waterMat->Roughness = 0.0f;
+
     mMaterials["carMat"] = std::move(carMat);
     mMaterials["roadMat"] = std::move(roadMat);
     mMaterials["skyMat"] = std::move(skyMat);
+    mMaterials["waterMat"] = std::move(waterMat);
 }
 
 void CarApp::BuildRenderItems()
@@ -830,9 +912,23 @@ void CarApp::BuildRenderItems()
     mSkyRitem = skyRitem.get();
     mAllRitems.push_back(std::move(skyRitem));
 
+    auto waterRitem = std::make_unique<RenderItem>();
+    XMStoreFloat4x4(&waterRitem->World, XMMatrixTranslation(0.0f, -0.5f, 0.0f));
+    waterRitem->TexTransform = MathHelper::Identity4x4();
+    waterRitem->ObjCBIndex = 3;
+    waterRitem->Mat = mMaterials["waterMat"].get();
+    waterRitem->Geo = mGeometries["waterGeo"].get();
+    waterRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    waterRitem->IndexCount = waterRitem->Geo->DrawArgs["water"].IndexCount;
+    waterRitem->StartIndexLocation = waterRitem->Geo->DrawArgs["water"].StartIndexLocation;
+    waterRitem->BaseVertexLocation = waterRitem->Geo->DrawArgs["water"].BaseVertexLocation;
+    mWaterRitem = waterRitem.get();
+    mTransparentRitems.push_back(waterRitem.get());
+    mAllRitems.push_back(std::move(waterRitem));
+
     for (auto& e : mAllRitems)
     {
-        if (e.get() != mSkyRitem)
+        if (e.get() != mSkyRitem && e.get() != mWaterRitem)
             mOpaqueRitems.push_back(e.get());
     }
 }
