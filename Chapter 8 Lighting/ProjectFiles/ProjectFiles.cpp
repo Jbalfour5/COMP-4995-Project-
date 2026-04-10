@@ -107,6 +107,7 @@ private:
     POINT mLastMousePos;
 
     std::unique_ptr<Texture> mSkyTex;
+    std::unique_ptr<Texture> mWaterTex;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -150,6 +151,7 @@ bool CarApp::Initialize()
 
     mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
+    // LOAD SKY TEXTURE
     mSkyTex = std::make_unique<Texture>();
     mSkyTex->Name = "skyTex";
     mSkyTex->Filename = L"../../Textures/sunsetcube1024.dds";
@@ -157,12 +159,23 @@ bool CarApp::Initialize()
         mCommandList.Get(), mSkyTex->Filename.c_str(),
         mSkyTex->Resource, mSkyTex->UploadHeap));
 
+    // LOAD WATER TEXTURE
+    mWaterTex = std::make_unique<Texture>();
+    mWaterTex->Name = "waterTex";
+    mWaterTex->Filename = L"../../Textures/water1.dds";
+    ThrowIfFailed(DirectX::CreateDDSTextureFromFile12(md3dDevice.Get(),
+        mCommandList.Get(), mWaterTex->Filename.c_str(),
+        mWaterTex->Resource, mWaterTex->UploadHeap));
+
     D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 1;
+    srvHeapDesc.NumDescriptors = 2;
     srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvDescriptorHeap)));
 
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+
+    // CREATE SKYBOX SRV
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Format = mSkyTex->Resource->GetDesc().Format;
@@ -170,7 +183,16 @@ bool CarApp::Initialize()
     srvDesc.TextureCube.MostDetailedMip = 0;
     srvDesc.TextureCube.MipLevels = mSkyTex->Resource->GetDesc().MipLevels;
     srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
-    md3dDevice->CreateShaderResourceView(mSkyTex->Resource.Get(), &srvDesc, mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
+    md3dDevice->CreateShaderResourceView(mSkyTex->Resource.Get(), &srvDesc, hDescriptor);
+
+    // CREATE WATER SRV
+    hDescriptor.Offset(1, mCbvSrvDescriptorSize);
+    srvDesc.Format = mWaterTex->Resource->GetDesc().Format;
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Texture2D.MostDetailedMip = 0;
+    srvDesc.Texture2D.MipLevels = mWaterTex->Resource->GetDesc().MipLevels;
+    srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+    md3dDevice->CreateShaderResourceView(mWaterTex->Resource.Get(), &srvDesc, hDescriptor);
 
     BuildRootSignature();
     BuildShadersAndInputLayout();
@@ -259,7 +281,10 @@ void CarApp::Draw(const GameTimer& gt)
 
     ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
     mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
-    mCommandList->SetGraphicsRootDescriptorTable(3, mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+
+    // BIND SKYBOX SRV
+    CD3DX12_GPU_DESCRIPTOR_HANDLE skySrvHandle(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+    mCommandList->SetGraphicsRootDescriptorTable(3, skySrvHandle);
 
     auto passCB = mCurrFrameResource->PassCB->Resource();
     mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
@@ -277,6 +302,12 @@ void CarApp::Draw(const GameTimer& gt)
     if (mTransparentPSO != nullptr)
     {
         mCommandList->SetPipelineState(mTransparentPSO.Get());
+
+        // BIND WATER SRV
+        CD3DX12_GPU_DESCRIPTOR_HANDLE waterSrvHandle(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
+        waterSrvHandle.Offset(1, mCbvSrvDescriptorSize);
+        mCommandList->SetGraphicsRootDescriptorTable(3, waterSrvHandle);
+
         DrawRenderItems(mCommandList.Get(), mTransparentRitems);
     }
 
@@ -329,6 +360,15 @@ void CarApp::UpdateCamera(const GameTimer& gt)
 
 void CarApp::UpdateObjectCBs(const GameTimer& gt)
 {
+    // ANIMATE WATER
+    if (mWaterRitem != nullptr)
+    {
+        float waterY = -0.5f + 0.15f * sinf(gt.TotalTime() * 1.5f);
+        XMMATRIX waterWorld = XMMatrixTranslation(0.0f, waterY, 0.0f);
+        XMStoreFloat4x4(&mWaterRitem->World, waterWorld);
+        mWaterRitem->NumFramesDirty = gNumFrameResources;
+    }
+
     auto currObjectCB = mCurrFrameResource->ObjectCB.get();
     for (auto& e : mAllRitems)
     {
