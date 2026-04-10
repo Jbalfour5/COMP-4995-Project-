@@ -154,7 +154,7 @@ bool CarApp::Initialize()
 
     mCbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // LOAD SKY TEXTURE
+    // Sky Texture Load
     mSkyTex = std::make_unique<Texture>();
     mSkyTex->Name = "skyTex";
     mSkyTex->Filename = L"../../Textures/sunsetcube1024.dds";
@@ -162,7 +162,7 @@ bool CarApp::Initialize()
         mCommandList.Get(), mSkyTex->Filename.c_str(),
         mSkyTex->Resource, mSkyTex->UploadHeap));
 
-    // LOAD WATER TEXTURE
+    // Water Texture Load
     mWaterTex = std::make_unique<Texture>();
     mWaterTex->Name = "waterTex";
     mWaterTex->Filename = L"../../Textures/water1.dds";
@@ -178,7 +178,7 @@ bool CarApp::Initialize()
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(mSrvDescriptorHeap->GetCPUDescriptorHandleForHeapStart());
 
-    // CREATE SKYBOX SRV
+    // Skybox SRV
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srvDesc.Format = mSkyTex->Resource->GetDesc().Format;
@@ -188,7 +188,7 @@ bool CarApp::Initialize()
     srvDesc.TextureCube.ResourceMinLODClamp = 0.0f;
     md3dDevice->CreateShaderResourceView(mSkyTex->Resource.Get(), &srvDesc, hDescriptor);
 
-    // CREATE WATER SRV
+    // Water SRV
     hDescriptor.Offset(1, mCbvSrvDescriptorSize);
     srvDesc.Format = mWaterTex->Resource->GetDesc().Format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
@@ -285,14 +285,28 @@ void CarApp::Draw(const GameTimer& gt)
     ID3D12DescriptorHeap* descriptorHeaps[] = { mSrvDescriptorHeap.Get() };
     mCommandList->SetDescriptorHeaps(_countof(descriptorHeaps), descriptorHeaps);
 
-    // BIND SKYBOX SRV
     CD3DX12_GPU_DESCRIPTOR_HANDLE skySrvHandle(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
     mCommandList->SetGraphicsRootDescriptorTable(3, skySrvHandle);
 
     auto passCB = mCurrFrameResource->PassCB->Resource();
     mCommandList->SetGraphicsRootConstantBufferView(2, passCB->GetGPUVirtualAddress());
 
-    DrawRenderItems(mCommandList.Get(), mOpaqueRitems);
+    std::vector<RenderItem*> roadItem;
+    roadItem.push_back(mRoadRitem);
+    mCommandList->OMSetStencilRef(0);
+    DrawRenderItems(mCommandList.Get(), roadItem);
+
+    std::vector<RenderItem*> carItem;
+    carItem.push_back(mCarRitem);
+    mCommandList->OMSetStencilRef(1);
+    DrawRenderItems(mCommandList.Get(), carItem);
+
+    if (mOutlinePSO != nullptr)
+    {
+        mCommandList->SetPipelineState(mOutlinePSO.Get());
+        mCommandList->OMSetStencilRef(1);
+        DrawRenderItems(mCommandList.Get(), mOutlineRitems);
+    }
 
     if (mSkyPSO != nullptr)
     {
@@ -306,7 +320,6 @@ void CarApp::Draw(const GameTimer& gt)
     {
         mCommandList->SetPipelineState(mTransparentPSO.Get());
 
-        // BIND WATER SRV
         CD3DX12_GPU_DESCRIPTOR_HANDLE waterSrvHandle(mSrvDescriptorHeap->GetGPUDescriptorHandleForHeapStart());
         waterSrvHandle.Offset(1, mCbvSrvDescriptorSize);
         mCommandList->SetGraphicsRootDescriptorTable(3, waterSrvHandle);
@@ -363,7 +376,6 @@ void CarApp::UpdateCamera(const GameTimer& gt)
 
 void CarApp::UpdateObjectCBs(const GameTimer& gt)
 {
-    // ANIMATE WATER
     if (mWaterRitem != nullptr)
     {
         float waterY = -0.5f + 0.15f * sinf(gt.TotalTime() * 1.5f);
@@ -391,15 +403,16 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
 
     if (mCarRitem == nullptr) return;
 
+    // WAYPOINTS MULTIPLIED BY 2
     static const XMFLOAT3 waypoints[] =
     {
-        { 2.00f, 0.5f, -7.5f },
-        { 1.5f, 0.5f, -5.0f },
-        { 0.75f, 0.35f, -2.5f },
-        { 0.0f, 0.35f,  0.0f },
-        { -0.7f, 0.35f,  2.5f },
-        { -1.0f, 0.35f,  5.0f },
-        { -1.7f, 0.35f,  7.5f },
+        { 4.00f, 1.0f, -15.0f },
+        { 3.0f, 1.0f, -10.0f },
+        { 1.5f, 0.7f, -5.0f },
+        { 0.0f, 0.7f,  0.0f },
+        { -1.4f, 0.7f,  5.0f },
+        { -2.0f, 0.7f,  10.0f },
+        { -3.4f, 0.7f,  15.0f },
     };
     static const int numWaypoints = _countof(waypoints);
 
@@ -417,13 +430,25 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
     XMVECTOR dir = XMVector3Normalize(XMVectorSubtract(p1, p0));
     float yaw = atan2f(XMVectorGetX(dir), XMVectorGetZ(dir));
 
+    // CAR SCALED UP BY 2
     XMMATRIX world =
-        XMMatrixScaling(0.05f, 0.05f, 0.05f) *
+        XMMatrixScaling(0.1f, 0.1f, 0.1f) *
         XMMatrixRotationY(yaw) *
         XMMatrixTranslation(XMVectorGetX(pos), XMVectorGetY(pos), XMVectorGetZ(pos));
 
     XMStoreFloat4x4(&mCarRitem->World, world);
     mCarRitem->NumFramesDirty = gNumFrameResources;
+
+    if (mCarOutlineRitem != nullptr)
+    {
+        XMMATRIX outlineWorld =
+            XMMatrixScaling(0.104f, 0.104f, 0.104f) *
+            XMMatrixRotationY(yaw) *
+            XMMatrixTranslation(XMVectorGetX(pos), XMVectorGetY(pos), XMVectorGetZ(pos));
+
+        XMStoreFloat4x4(&mCarOutlineRitem->World, outlineWorld);
+        mCarOutlineRitem->NumFramesDirty = gNumFrameResources;
+    }
 
     if (mSkyRitem != nullptr)
     {
@@ -952,7 +977,7 @@ void CarApp::BuildMaterials()
 void CarApp::BuildRenderItems()
 {
     auto roadRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&roadRitem->World, XMMatrixScaling(0.05f, 0.05f, 0.05f));
+    XMStoreFloat4x4(&roadRitem->World, XMMatrixScaling(0.1f, 0.1f, 0.1f));
     roadRitem->TexTransform = MathHelper::Identity4x4();
     roadRitem->ObjCBIndex = 0;
     roadRitem->Mat = mMaterials["roadMat"].get();
@@ -965,7 +990,7 @@ void CarApp::BuildRenderItems()
     mAllRitems.push_back(std::move(roadRitem));
 
     auto carRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.05f, 0.05f, 0.05f) * XMMatrixTranslation(0.0f, 0.15f, 0.0f));
+    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.1f, 0.1f, 0.1f) * XMMatrixTranslation(0.0f, 0.3f, 0.0f));
     carRitem->TexTransform = MathHelper::Identity4x4();
     carRitem->ObjCBIndex = 1;
     carRitem->Mat = mMaterials["carMat"].get();
