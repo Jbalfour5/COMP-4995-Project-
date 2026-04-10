@@ -77,6 +77,7 @@ private:
     RenderItem* mRoadRitem = nullptr;
     RenderItem* mSkyRitem = nullptr;
     RenderItem* mWaterRitem = nullptr;
+    RenderItem* mCarOutlineRitem = nullptr;
 
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
     FrameResource* mCurrFrameResource = nullptr;
@@ -95,10 +96,12 @@ private:
     ComPtr<ID3D12PipelineState> mOpaquePSO = nullptr;
     ComPtr<ID3D12PipelineState> mSkyPSO = nullptr;
     ComPtr<ID3D12PipelineState> mTransparentPSO = nullptr;
+    ComPtr<ID3D12PipelineState> mOutlinePSO = nullptr;
 
     std::vector<std::unique_ptr<RenderItem>> mAllRitems;
     std::vector<RenderItem*> mOpaqueRitems;
     std::vector<RenderItem*> mTransparentRitems;
+    std::vector<RenderItem*> mOutlineRitems;
 
     PassConstants mMainPassCB;
 
@@ -807,7 +810,6 @@ void CarApp::BuildPSOs()
     };
     opaquePsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     opaquePsoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    opaquePsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     opaquePsoDesc.SampleMask = UINT_MAX;
     opaquePsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     opaquePsoDesc.NumRenderTargets = 1;
@@ -822,7 +824,32 @@ void CarApp::BuildPSOs()
         mShaders["standardGS"]->GetBufferSize()
     };
 
+    D3D12_DEPTH_STENCIL_DESC opaqueDSS;
+    opaqueDSS.DepthEnable = true;
+    opaqueDSS.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    opaqueDSS.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+    opaqueDSS.StencilEnable = true;
+    opaqueDSS.StencilReadMask = 0xff;
+    opaqueDSS.StencilWriteMask = 0xff;
+    opaqueDSS.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+    opaqueDSS.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+    opaqueDSS.FrontFace.StencilPassOp = D3D12_STENCIL_OP_REPLACE;
+    opaqueDSS.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+    opaqueDSS.BackFace = opaqueDSS.FrontFace;
+    opaquePsoDesc.DepthStencilState = opaqueDSS;
+
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mOpaquePSO)));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC outlinePsoDesc = opaquePsoDesc;
+    D3D12_DEPTH_STENCIL_DESC outlineDSS = opaqueDSS;
+    outlineDSS.StencilEnable = true;
+    outlineDSS.FrontFace.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+    outlineDSS.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
+    outlineDSS.BackFace = outlineDSS.FrontFace;
+    outlineDSS.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    outlinePsoDesc.DepthStencilState = outlineDSS;
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&outlinePsoDesc, IID_PPV_ARGS(&mOutlinePSO)));
 
     D3D12_RENDER_TARGET_BLEND_DESC transparencyBlendDesc;
     transparencyBlendDesc.BlendEnable = true;
@@ -838,11 +865,13 @@ void CarApp::BuildPSOs()
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC transparentPsoDesc = opaquePsoDesc;
     transparentPsoDesc.BlendState.RenderTarget[0] = transparencyBlendDesc;
+    transparentPsoDesc.DepthStencilState.StencilEnable = false;
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&transparentPsoDesc, IID_PPV_ARGS(&mTransparentPSO)));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC skyPsoDesc = opaquePsoDesc;
     skyPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     skyPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    skyPsoDesc.DepthStencilState.StencilEnable = false;
     skyPsoDesc.pRootSignature = mRootSignature.Get();
 
     if (mShaders.find("skyVS") != mShaders.end() && mShaders.find("skyPS") != mShaders.end())
@@ -905,10 +934,19 @@ void CarApp::BuildMaterials()
     waterMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
     waterMat->Roughness = 0.0f;
 
+    auto outlineMat = std::make_unique<Material>();
+    outlineMat->Name = "outlineMat";
+    outlineMat->MatCBIndex = 4;
+    outlineMat->DiffuseSrvHeapIndex = 0;
+    outlineMat->DiffuseAlbedo = XMFLOAT4(1.0f, 1.0f, 0.0f, 1.0f);
+    outlineMat->FresnelR0 = XMFLOAT3(0.1f, 0.1f, 0.1f);
+    outlineMat->Roughness = 1.0f;
+
     mMaterials["carMat"] = std::move(carMat);
     mMaterials["roadMat"] = std::move(roadMat);
     mMaterials["skyMat"] = std::move(skyMat);
     mMaterials["waterMat"] = std::move(waterMat);
+    mMaterials["outlineMat"] = std::move(outlineMat);
 }
 
 void CarApp::BuildRenderItems()
@@ -966,9 +1004,23 @@ void CarApp::BuildRenderItems()
     mTransparentRitems.push_back(waterRitem.get());
     mAllRitems.push_back(std::move(waterRitem));
 
+    auto carOutlineRitem = std::make_unique<RenderItem>();
+    carOutlineRitem->World = mCarRitem->World;
+    carOutlineRitem->TexTransform = MathHelper::Identity4x4();
+    carOutlineRitem->ObjCBIndex = 4;
+    carOutlineRitem->Mat = mMaterials["outlineMat"].get();
+    carOutlineRitem->Geo = mGeometries["carGeo"].get();
+    carOutlineRitem->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    carOutlineRitem->IndexCount = carOutlineRitem->Geo->DrawArgs["car"].IndexCount;
+    carOutlineRitem->StartIndexLocation = carOutlineRitem->Geo->DrawArgs["car"].StartIndexLocation;
+    carOutlineRitem->BaseVertexLocation = carOutlineRitem->Geo->DrawArgs["car"].BaseVertexLocation;
+    mCarOutlineRitem = carOutlineRitem.get();
+    mOutlineRitems.push_back(carOutlineRitem.get());
+    mAllRitems.push_back(std::move(carOutlineRitem));
+
     for (auto& e : mAllRitems)
     {
-        if (e.get() != mSkyRitem && e.get() != mWaterRitem)
+        if (e.get() != mSkyRitem && e.get() != mWaterRitem && e.get() != mCarOutlineRitem)
             mOpaqueRitems.push_back(e.get());
     }
 }
