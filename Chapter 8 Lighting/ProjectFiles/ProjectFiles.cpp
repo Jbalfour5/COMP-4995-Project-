@@ -403,16 +403,15 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
 
     if (mCarRitem == nullptr) return;
 
-    // WAYPOINTS MULTIPLIED BY 2
     static const XMFLOAT3 waypoints[] =
     {
-        { 4.00f, 1.0f, -15.0f },
-        { 3.0f, 1.0f, -10.0f },
-        { 1.5f, 0.7f, -5.0f },
-        { 0.0f, 0.7f,  0.0f },
-        { -1.4f, 0.7f,  5.0f },
-        { -2.0f, 0.7f,  10.0f },
-        { -3.4f, 0.7f,  15.0f },
+        { 8.00f, 2.0f, -30.0f },
+        { 6.0f, 2.0f, -20.0f },
+        { 3.0f, 1.4f, -10.0f },
+        { 0.0f, 1.4f,  0.0f },
+        { -2.8f, 1.4f,  10.0f },
+        { -4.0f, 1.4f,  20.0f },
+        { -6.8f, 1.4f,  30.0f },
     };
     static const int numWaypoints = _countof(waypoints);
 
@@ -430,9 +429,8 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
     XMVECTOR dir = XMVector3Normalize(XMVectorSubtract(p1, p0));
     float yaw = atan2f(XMVectorGetX(dir), XMVectorGetZ(dir));
 
-    // CAR SCALED UP BY 2
     XMMATRIX world =
-        XMMatrixScaling(0.1f, 0.1f, 0.1f) *
+        XMMatrixScaling(0.2f, 0.2f, 0.2f) *
         XMMatrixRotationY(yaw) *
         XMMatrixTranslation(XMVectorGetX(pos), XMVectorGetY(pos), XMVectorGetZ(pos));
 
@@ -442,7 +440,7 @@ void CarApp::UpdateObjectCBs(const GameTimer& gt)
     if (mCarOutlineRitem != nullptr)
     {
         XMMATRIX outlineWorld =
-            XMMatrixScaling(0.104f, 0.104f, 0.104f) *
+            XMMatrixScaling(0.208f, 0.208f, 0.208f) *
             XMMatrixRotationY(yaw) *
             XMMatrixTranslation(XMVectorGetX(pos), XMVectorGetY(pos), XMVectorGetZ(pos));
 
@@ -977,7 +975,7 @@ void CarApp::BuildMaterials()
 void CarApp::BuildRenderItems()
 {
     auto roadRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&roadRitem->World, XMMatrixScaling(0.1f, 0.1f, 0.1f));
+    XMStoreFloat4x4(&roadRitem->World, XMMatrixScaling(0.2f, 0.2f, 0.2f));
     roadRitem->TexTransform = MathHelper::Identity4x4();
     roadRitem->ObjCBIndex = 0;
     roadRitem->Mat = mMaterials["roadMat"].get();
@@ -990,7 +988,7 @@ void CarApp::BuildRenderItems()
     mAllRitems.push_back(std::move(roadRitem));
 
     auto carRitem = std::make_unique<RenderItem>();
-    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.1f, 0.1f, 0.1f) * XMMatrixTranslation(0.0f, 0.3f, 0.0f));
+    XMStoreFloat4x4(&carRitem->World, XMMatrixScaling(0.2f, 0.2f, 0.2f) * XMMatrixTranslation(0.0f, 0.6f, 0.0f));
     carRitem->TexTransform = MathHelper::Identity4x4();
     carRitem->ObjCBIndex = 1;
     carRitem->Mat = mMaterials["carMat"].get();
