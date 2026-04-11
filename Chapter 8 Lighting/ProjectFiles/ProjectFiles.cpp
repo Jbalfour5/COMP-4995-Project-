@@ -537,8 +537,8 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
     };
 
     mMainPassCB.Lights[3].Direction = forward;
-    mMainPassCB.Lights[3].Strength = { 25.0f, 25.0f, 25.0f };
-    mMainPassCB.Lights[3].SpotPower = 64.0f;
+    mMainPassCB.Lights[3].Strength = { 400.0f, 400.0f, 400.0f };
+    mMainPassCB.Lights[3].SpotPower = 128.0f;
 
     mMainPassCB.Lights[4].Position = {
         carPos.x + rightOffset.x,
@@ -547,8 +547,8 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
     };
 
     mMainPassCB.Lights[4].Direction = forward;
-    mMainPassCB.Lights[4].Strength = { 25.0f, 25.0f, 25.0f };
-    mMainPassCB.Lights[4].SpotPower = 64.0f;
+    mMainPassCB.Lights[4].Strength = { 400.0f, 400.0f, 400.0f };
+    mMainPassCB.Lights[4].SpotPower = 128.0f;
 
     auto currPassCB = mCurrFrameResource->PassCB.get();
     currPassCB->CopyData(0, mMainPassCB);
