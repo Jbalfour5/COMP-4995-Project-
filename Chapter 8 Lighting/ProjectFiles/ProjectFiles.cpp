@@ -63,6 +63,7 @@ private:
     void BuildCarGeometry();
     void BuildRoadGeometry();
     void BuildSkyGeometry();
+    void BuildTunnelGeometry();
     void BuildWaterGeometry();
     void BuildPSOs();
     void BuildFrameResources();
@@ -78,6 +79,8 @@ private:
     RenderItem* mSkyRitem = nullptr;
     RenderItem* mWaterRitem = nullptr;
     RenderItem* mCarOutlineRitem = nullptr;
+    RenderItem* mSpawnTunnelRitem = nullptr;
+    RenderItem* mDespawnTunnelRitem = nullptr;
 
     std::vector<std::unique_ptr<FrameResource>> mFrameResources;
     FrameResource* mCurrFrameResource = nullptr;
@@ -97,6 +100,7 @@ private:
     ComPtr<ID3D12PipelineState> mSkyPSO = nullptr;
     ComPtr<ID3D12PipelineState> mTransparentPSO = nullptr;
     ComPtr<ID3D12PipelineState> mOutlinePSO = nullptr;
+    ComPtr<ID3D12PipelineState> mTunnelPSO = nullptr;
 
     std::vector<std::unique_ptr<RenderItem>> mAllRitems;
     std::vector<RenderItem*> mOpaqueRitems;
@@ -203,6 +207,7 @@ bool CarApp::Initialize()
     BuildRoadGeometry();
     BuildWaterGeometry();
     BuildSkyGeometry();
+    BuildTunnelGeometry();
     BuildMaterials();
     BuildRenderItems();
     BuildFrameResources();
@@ -296,10 +301,19 @@ void CarApp::Draw(const GameTimer& gt)
     mCommandList->OMSetStencilRef(0);
     DrawRenderItems(mCommandList.Get(), roadItem);
 
+    mCommandList->OMSetStencilRef(0);
+    std::vector<RenderItem*> tunnelItems;
+    tunnelItems.push_back(mSpawnTunnelRitem);
+    tunnelItems.push_back(mDespawnTunnelRitem);
+    mCommandList->SetPipelineState(mTunnelPSO.Get());
+    DrawRenderItems(mCommandList.Get(), tunnelItems);
+
     std::vector<RenderItem*> carItem;
     carItem.push_back(mCarRitem);
     mCommandList->OMSetStencilRef(1);
     DrawRenderItems(mCommandList.Get(), carItem);
+
+
 
     if (mOutlinePSO != nullptr)
     {
@@ -537,8 +551,8 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
     };
 
     mMainPassCB.Lights[3].Direction = forward;
-    mMainPassCB.Lights[3].Strength = { 400.0f, 400.0f, 400.0f };
-    mMainPassCB.Lights[3].SpotPower = 128.0f;
+    mMainPassCB.Lights[3].Strength = { 25.0f, 25.0f, 25.0f };
+    mMainPassCB.Lights[3].SpotPower = 64.0f;
 
     mMainPassCB.Lights[4].Position = {
         carPos.x + rightOffset.x,
@@ -547,8 +561,8 @@ void CarApp::UpdateMainPassCB(const GameTimer& gt)
     };
 
     mMainPassCB.Lights[4].Direction = forward;
-    mMainPassCB.Lights[4].Strength = { 400.0f, 400.0f, 400.0f };
-    mMainPassCB.Lights[4].SpotPower = 128.0f;
+    mMainPassCB.Lights[4].Strength = { 25.0f, 25.0f, 25.0f };
+    mMainPassCB.Lights[4].SpotPower = 64.0f;
 
     auto currPassCB = mCurrFrameResource->PassCB.get();
     currPassCB->CopyData(0, mMainPassCB);
@@ -852,6 +866,52 @@ void CarApp::BuildSkyGeometry()
     mGeometries[geo->Name] = std::move(geo);
 }
 
+void CarApp::BuildTunnelGeometry()
+{
+    GeometryGenerator geoGen;
+    GeometryGenerator::MeshData cylinder = geoGen.CreateCylinder(5.0f, 5.0f, 20.0f, 20, 20);
+
+    std::vector<Vertex> vertices(cylinder.Vertices.size());
+    for (size_t i = 0; i < cylinder.Vertices.size(); ++i)
+    {
+        vertices[i].Pos = cylinder.Vertices[i].Position;
+        vertices[i].Normal = cylinder.Vertices[i].Normal;
+        vertices[i].TexC = cylinder.Vertices[i].TexC;
+    }
+
+    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+    std::vector<std::uint16_t> indices = cylinder.GetIndices16();
+    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
+
+    auto geo = std::make_unique<MeshGeometry>();
+    geo->Name = "tunnelGeo";
+
+    ThrowIfFailed(D3DCreateBlob(vbByteSize, &geo->VertexBufferCPU));
+    CopyMemory(geo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
+
+    ThrowIfFailed(D3DCreateBlob(ibByteSize, &geo->IndexBufferCPU));
+    CopyMemory(geo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
+
+    geo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), vertices.data(), vbByteSize, geo->VertexBufferUploader);
+
+    geo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibByteSize, geo->IndexBufferUploader);
+
+    geo->VertexByteStride = sizeof(Vertex);
+    geo->VertexBufferByteSize = vbByteSize;
+    geo->IndexFormat = DXGI_FORMAT_R16_UINT;
+    geo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT)indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    geo->DrawArgs["tunnel"] = submesh;
+    mGeometries[geo->Name] = std::move(geo);
+}
+
 void CarApp::BuildPSOs()
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC opaquePsoDesc;
@@ -885,6 +945,8 @@ void CarApp::BuildPSOs()
         mShaders["standardGS"]->GetBufferSize()
     };
 
+    
+
     D3D12_DEPTH_STENCIL_DESC opaqueDSS;
     opaqueDSS.DepthEnable = true;
     opaqueDSS.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
@@ -900,6 +962,35 @@ void CarApp::BuildPSOs()
     opaquePsoDesc.DepthStencilState = opaqueDSS;
 
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&opaquePsoDesc, IID_PPV_ARGS(&mOpaquePSO)));
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC tunnelPsoDesc = {};
+    tunnelPsoDesc = opaquePsoDesc;
+
+    tunnelPsoDesc.pRootSignature = mRootSignature.Get();
+
+    tunnelPsoDesc.VS = opaquePsoDesc.VS;
+    tunnelPsoDesc.PS = opaquePsoDesc.PS;
+
+ 
+    tunnelPsoDesc.GS.pShaderBytecode = nullptr;
+    tunnelPsoDesc.GS.BytecodeLength = 0;
+
+    tunnelPsoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
+
+    tunnelPsoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    tunnelPsoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    tunnelPsoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+
+    tunnelPsoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+
+    tunnelPsoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(
+        &tunnelPsoDesc,
+        IID_PPV_ARGS(&mTunnelPSO)
+    ));
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC outlinePsoDesc = opaquePsoDesc;
     D3D12_DEPTH_STENCIL_DESC outlineDSS = opaqueDSS;
@@ -1078,6 +1169,40 @@ void CarApp::BuildRenderItems()
     mCarOutlineRitem = carOutlineRitem.get();
     mOutlineRitems.push_back(carOutlineRitem.get());
     mAllRitems.push_back(std::move(carOutlineRitem));
+
+    XMVECTOR spawnPos = XMVectorSet(8.00f, 1.0f, -30.0f, 1.0f);
+    XMVECTOR despawnPos = XMVectorSet(-6.8f, 1.0f, 30.0f, 1.0f);
+    XMVECTOR nextPos = XMVectorSet(6.0f, 2.0f, -20.0f, 1.0f);
+    XMVECTOR dir = XMVector3Normalize(nextPos - spawnPos);
+    float yaw = atan2f(XMVectorGetX(dir), XMVectorGetZ(dir));
+
+    auto spawnTunnel = std::make_unique<RenderItem>();
+    XMMATRIX spawnWorld = XMMatrixRotationX(MathHelper::Pi / 2.0f) * XMMatrixRotationY(yaw) * XMMatrixTranslationFromVector(spawnPos);
+    XMStoreFloat4x4(&spawnTunnel->World, spawnWorld);
+    spawnTunnel->ObjCBIndex = 5;
+    spawnTunnel->Mat = mMaterials["roadMat"].get(); 
+    spawnTunnel->Geo = mGeometries["tunnelGeo"].get();
+    spawnTunnel->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    spawnTunnel->IndexCount = spawnTunnel->Geo->DrawArgs["tunnel"].IndexCount;
+    spawnTunnel->StartIndexLocation = spawnTunnel->Geo->DrawArgs["tunnel"].StartIndexLocation;
+    spawnTunnel->BaseVertexLocation = spawnTunnel->Geo->DrawArgs["tunnel"].BaseVertexLocation;
+    mSpawnTunnelRitem = spawnTunnel.get();
+    mOpaqueRitems.push_back(mSpawnTunnelRitem);
+    mAllRitems.push_back(std::move(spawnTunnel));
+
+    auto despawnTunnel = std::make_unique<RenderItem>();
+    XMMATRIX despawnWorld = XMMatrixRotationX(MathHelper::Pi / 2.0f) * XMMatrixRotationY(-0.3f) * XMMatrixTranslationFromVector(despawnPos);
+    XMStoreFloat4x4(&despawnTunnel->World, despawnWorld);
+    despawnTunnel->ObjCBIndex = 6;
+    despawnTunnel->Mat = mMaterials["roadMat"].get();
+    despawnTunnel->Geo = mGeometries["tunnelGeo"].get();
+    despawnTunnel->PrimitiveType = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    despawnTunnel->IndexCount = despawnTunnel->Geo->DrawArgs["tunnel"].IndexCount;
+    despawnTunnel->StartIndexLocation = despawnTunnel->Geo->DrawArgs["tunnel"].StartIndexLocation;
+    despawnTunnel->BaseVertexLocation = despawnTunnel->Geo->DrawArgs["tunnel"].BaseVertexLocation;
+    mDespawnTunnelRitem = despawnTunnel.get();
+    mOpaqueRitems.push_back(mDespawnTunnelRitem);
+    mAllRitems.push_back(std::move(despawnTunnel));
 
     for (auto& e : mAllRitems)
     {
